@@ -292,24 +292,43 @@ bool UrgNode2::connect()
   device_id_ = urg_sensor_serial_id(&urg_);
   scan_period_ = 1.e-6 * static_cast<double>(urg_scan_usec(&urg_));
 
-  // 接続先のLiDARが強度出力に対応しているか
-  if (publish_intensity_) {
-    use_intensity_ = is_intensity_supported();
-    if (!use_intensity_) {
-      RCLCPP_WARN(
-        get_logger(),
-        "parameter 'publish_intensity' is true, but this device does not support intensity mode. disable intensity mode.");
-    }
-  }
-  // 接続先のLiDARがマルチエコー出力に対応しているか
-  if (publish_multiecho_) {
-    use_multiecho_ = is_multiecho_supported();
-    if (!use_multiecho_) {
-      RCLCPP_WARN(
-        get_logger(),
-        "parameter 'publish_multiecho' is true, but this device does not support multiecho scan mode. switch single scan mode.");
-    }
-  }
+	// 接続先のLiDARが強度出力に対応しているか
+	if (publish_intensity_) {
+		// try to init intensity mode
+		error_count_ = 0;
+		while(rclcpp::ok())
+		{
+			RCLCPP_INFO(get_logger(), "Trying to init intensity mode");
+			if (is_intensity_supported())
+			{
+				RCLCPP_INFO(get_logger(), "Intensity mode init success");
+				use_intensity_ = true;
+				break;
+			}
+			RCLCPP_WARN(get_logger(), "Failed to init intensity mode");
+			error_count_ += 1;
+			if (error_count_ > error_limit_)
+			{
+				error_count_ = 0;
+				use_intensity_ = false;
+				break;
+			}
+		}
+		if (!use_intensity_) {
+			RCLCPP_WARN(
+				get_logger(),
+				"parameter 'publish_intensity' is true, but this device does not support intensity mode. disable intensity mode.");
+		}
+	}
+	// 接続先のLiDARがマルチエコー出力に対応しているか
+	if (publish_multiecho_) {
+		use_multiecho_ = is_multiecho_supported();
+		if (!use_multiecho_) {
+			RCLCPP_WARN(
+				get_logger(),
+				"parameter 'publish_multiecho' is true, but this device does not support multiecho scan mode. switch single scan mode.");
+		}
+	}
 
   // 計測タイプ設定
   if (use_intensity_ && use_multiecho_) {
@@ -392,10 +411,13 @@ void UrgNode2::set_scan_parameter()
 // Lidarとの切断処理
 void UrgNode2::disconnect()
 {
-  if (is_connected_) {
-    urg_close(&urg_);
-    is_connected_ = false;
-  }
+	if (is_connected_) {
+		urg_close(&urg_);
+		is_connected_ = false;
+	}
+	// stop this from being stuck true
+	if (is_measurement_started_)
+		is_measurement_started_ = false;
 }
 
 // Lidarとの再接続処理
@@ -774,16 +796,18 @@ bool UrgNode2::is_intensity_supported(void)
     return false;
   }
 
-  if (urg_start_measurement(&urg_, URG_DISTANCE_INTENSITY, 0, 0, 0) < 0) {
-    RCLCPP_WARN(get_logger(), "Could not start Hokuyo measurement\n%s", urg_error(&urg_));
-    return false;
-  }
-  is_measurement_started_ = true;
-  int ret = urg_get_distance_intensity(&urg_, &distance_[0], &intensity_[0], NULL);
-  if (ret <= 0) {
-    // 強度出力非対応
-    return false;
-  }
+	if (urg_start_measurement(&urg_, URG_DISTANCE_INTENSITY, 0, 0, 0) < 0) {
+		RCLCPP_WARN(get_logger(), "Could not start Hokuyo measurement\n%s", urg_error(&urg_));
+		return false;
+	}
+	is_measurement_started_ = true;
+	int ret = urg_get_distance_intensity(&urg_, &distance_[0], &intensity_[0], NULL);
+	if (ret <= 0) {
+		// 強度出力非対応
+		urg_stop_measurement(&urg_);
+		is_measurement_started_ = false;
+		return false;
+	}
 
   urg_stop_measurement(&urg_);
   is_measurement_started_ = false;
